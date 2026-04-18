@@ -35,7 +35,6 @@ for _pkg in _REQUIRED:
 
 import asyncio, zipfile, shutil, tarfile, time, re, logging, json
 from pathlib import Path
-from base64 import b64decode
 from urllib.parse import urlparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -49,13 +48,17 @@ from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.WARNING)
 
 # ═══════════════════════════════════════════════════════════════════════
-#  CREDENTIALS
-#  To encode a new value:
-#    python3 -c "import base64; print(base64.b64encode(b'YOUR_VALUE').decode())"
+#  CREDENTIALS (ENV ONLY)
 # ═══════════════════════════════════════════════════════════════════════
-_AI = int(b64decode("Mjk2NDM0NzQ=").decode())
-_AH = b64decode("NDkxNjMzZjAzNGMxYjUwYjFiYzBmMWU0ZDJiNDI2ZTM=").decode()
-_BT = b64decode("ODcyMzk2NTI5MzpBQUdfd0hOZTkzNERNVHVTRlpZTFhNNDVXajN3dEdMTEdDUQ==").decode()
+def _must_env(name: str, fallback: str | None = None) -> str:
+    v = os.getenv(name) or (os.getenv(fallback) if fallback else None)
+    if not v:
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return v
+
+_AI = int(_must_env("API_ID", "TELEGRAM_API_ID"))
+_AH = _must_env("API_HASH", "TELEGRAM_API_HASH")
+_BT = _must_env("BOT_TOKEN", "TELEGRAM_BOT_TOKEN")
 
 # ═══════════════════════════════════════════════════════════════════════
 #  CONFIG
@@ -1012,6 +1015,56 @@ async def cb_fwd(event):
     await event.answer()
     await handle_forward(stored["event"], dest_channel=(ch if mode == "ch" else None))
 
+def get_doc_name(msg) -> str:
+    return next(
+        (a.file_name for a in (msg.document.attributes or []) if hasattr(a, "file_name")),
+        f"file_{int(time.time())}",
+    )
+
+@client.on(events.Album)
+async def album_handler(event):
+    # Handle multiple archives sent together
+    sender = await event.get_sender()
+    if sender is None or getattr(sender, "bot", False):
+        return
+    if not await check_policy(event):
+        return
+
+    archives = []
+    for m in event.messages:
+        if not m.document:
+            continue
+        fname = get_doc_name(m)
+        if not is_archive(fname):
+            continue
+        archives.append((m, fname))
+
+    if not archives:
+        return
+
+    wait = await event.reply(
+        f"📦 *{len(archives)} archive file(s) detected.*\nStarting download + extraction…",
+        parse_mode="markdown",
+    )
+
+    started = 0
+    for m, fname in archives:
+        try:
+            dl_path = WORK_DIR / f"{event.chat_id}_{int(time.time()*1000)}_{started}{Path(fname).suffix}"
+            await m.download_media(file=str(dl_path))
+            asyncio.create_task(pipeline_archive(event, dl_path, fname))
+            started += 1
+        except Exception:
+            continue
+
+    try:
+        await wait.edit(
+            f"✅ Started `{started}` extraction job(s) from this album.",
+            parse_mode="markdown",
+        )
+    except Exception:
+        pass
+
 # ═══════════════════════════════════════════════════════════════════════
 #  MAIN MESSAGE HANDLER
 # ═══════════════════════════════════════════════════════════════════════
@@ -1057,10 +1110,11 @@ async def main_handler(event):
 
     # ── Archive file ──────────────────────────────────────────────────
     if msg.document:
-        fname = next(
-            (a.file_name for a in (msg.document.attributes or []) if hasattr(a, "file_name")),
-            f"file_{int(time.time())}"
-        )
+        # Albums are handled by album_handler to support multiple archives at once
+        if msg.grouped_id:
+            return
+
+        fname = get_doc_name(msg)
 
         if is_archive(fname):
             dl_msg = await event.reply(
