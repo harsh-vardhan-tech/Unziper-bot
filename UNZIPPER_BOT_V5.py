@@ -665,17 +665,19 @@ async def pipeline_archive(event, zip_path: Path, fname: str):
             if fp is None:
                 send_q.task_done()
                 break
+            if flag["stop"]:
+                send_q.task_done()
+                continue
+            if not fp.exists():
+                send_q.task_done()
+                continue
             try:
-                if flag["stop"]:
-                    continue
-                if not fp.exists():
-                    continue
                 sz = fp.stat().st_size
                 cap = f"📄 `{fp.name}`\n📦 {human(sz)}\n\n_via {BOT_TAG}_"
                 await send_path(target, fp, cap)
                 sent += 1
             except Exception as e:
-                skipped.append(f"`{Path(fp).name}`: {str(e)[:90]}")
+                skipped.append(f"`{fp.name}`: {str(e)[:90]}")
             finally:
                 send_q.task_done()
 
@@ -1058,7 +1060,7 @@ async def cb_fwd(event):
 def get_doc_name(msg) -> str:
     return next(
         (a.file_name for a in (msg.document.attributes or []) if hasattr(a, "file_name")),
-        f"file_{int(time.time())}",
+        f"file_{int(time.time())}.bin",
     )
 
 @client.on(events.Album)
