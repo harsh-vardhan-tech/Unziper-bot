@@ -70,6 +70,7 @@ BOT_TAG          = "@F88UF_FILEUNZIPBOT"
 AUTO_DEL_SEC     = 300           # 5 min auto-delete in bot chat only
 MAX_EXTRACT_JOBS = 20            # parallel extraction slots
 MAX_LINK_JOBS    = 10            # parallel link-download slots
+MAX_LIVE_SEND_WORKERS = 3        # per-job live send workers during extraction
 KEEP_ALIVE_PORT  = 8080          # UptimeRobot pings this port
 WORK_DIR         = Path("/tmp/uzbot")
 SESSIONS_FILE    = Path("/tmp/uzbot_accepted.json")
@@ -263,7 +264,7 @@ async def bot_is_admin(channel) -> bool:
 # ═══════════════════════════════════════════════════════════════════════
 #  EXTRACTION ENGINE
 # ═══════════════════════════════════════════════════════════════════════
-async def extract_archive(zip_path: Path, out_dir: Path, flag: dict, status_cb) -> list | None:
+async def extract_archive(zip_path: Path, out_dir: Path, flag: dict, status_cb, on_file=None) -> list | None:
     ext  = zip_path.suffix.lower()
     name = zip_path.name.lower()
     out  : list[Path] = []
@@ -284,7 +285,10 @@ async def extract_archive(zip_path: Path, out_dir: Path, flag: dict, status_cb) 
                     zf.extract(m, out_dir)
                     done += m.file_size
                     p = out_dir / m.filename
-                    if p.is_file(): out.append(p)
+                    if p.is_file():
+                        out.append(p)
+                        if on_file:
+                            await on_file(p)
                     if time.time() - t0 > 1.8:
                         await upd(
                             f"⚡ *Extracting ZIP*\n`{pbar(done, total)}`\n"
@@ -307,7 +311,10 @@ async def extract_archive(zip_path: Path, out_dir: Path, flag: dict, status_cb) 
                     tf.extract(m, out_dir, set_attrs=False)
                     done += m.size
                     p = out_dir / m.name
-                    if p.is_file(): out.append(p)
+                    if p.is_file():
+                        out.append(p)
+                        if on_file:
+                            await on_file(p)
                     if time.time() - t0 > 1.8:
                         await upd(
                             f"⚡ *Extracting TAR*\n`{pbar(done, total)}`\n"
@@ -339,7 +346,11 @@ async def extract_archive(zip_path: Path, out_dir: Path, flag: dict, status_cb) 
             err = (await proc.stderr.read()).decode(errors="ignore")[:250]
             await upd(f"❌ 7z error:\n`{err}`"); return []
         for root, _, fs in os.walk(out_dir):
-            for f in fs: out.append(Path(root) / f)
+            for f in fs:
+                p = Path(root) / f
+                out.append(p)
+                if on_file:
+                    await on_file(p)
     else:
         await upd(f"❌ Unsupported format: `{ext}`"); return []
 
@@ -436,6 +447,21 @@ async def download_link(url: str, out_dir: Path, flag: dict, status_cb) -> list 
 # ═══════════════════════════════════════════════════════════════════════
 #  SEND FILES  — one by one, with live progress + stop button
 # ═══════════════════════════════════════════════════════════════════════
+async def send_path(target, fp: Path, cap: str):
+    ext = Path(fp.name).suffix.lower()
+    if ext in VIDEO_EXTS:
+        await client.send_file(
+            target, str(fp), caption=cap, parse_mode="markdown", supports_streaming=True,
+        )
+    elif ext in IMAGE_EXTS:
+        await client.send_file(target, str(fp), caption=cap, parse_mode="markdown")
+    elif ext in AUDIO_EXTS:
+        await client.send_file(target, str(fp), caption=cap, parse_mode="markdown")
+    else:
+        await client.send_file(
+            target, str(fp), caption=cap, parse_mode="markdown", force_document=True,
+        )
+
 async def send_files(
     target, files: list, flag: dict, status_msg, flag_key: str, src: str = ""
 ) -> tuple[int, list]:
@@ -452,8 +478,6 @@ async def send_files(
 
         sz   = fp.stat().st_size
         name = fp.name
-        ext  = Path(name).suffix.lower()
-
         # ── Update progress message ──────────────────────────────────
         try:
             await status_msg.edit(
@@ -471,36 +495,7 @@ async def send_files(
 
         # ── Send based on file type ──────────────────────────────────
         try:
-            if ext in VIDEO_EXTS:
-                # Videos → send as streamable video (plays inline in Telegram)
-                await client.send_file(
-                    target, str(fp),
-                    caption=cap,
-                    parse_mode="markdown",
-                    supports_streaming=True,
-                )
-            elif ext in IMAGE_EXTS:
-                # Images → send as photo
-                await client.send_file(
-                    target, str(fp),
-                    caption=cap,
-                    parse_mode="markdown",
-                )
-            elif ext in AUDIO_EXTS:
-                # Audio → send as audio player
-                await client.send_file(
-                    target, str(fp),
-                    caption=cap,
-                    parse_mode="markdown",
-                )
-            else:
-                # Everything else → send as document (no conversion)
-                await client.send_file(
-                    target, str(fp),
-                    caption=cap,
-                    parse_mode="markdown",
-                    force_document=True,
-                )
+            await send_path(target, fp, cap)
             sent += 1
         except Exception as e:
             err = str(e)[:100]
@@ -628,23 +623,71 @@ async def pipeline_archive(event, zip_path: Path, fname: str):
     flag     = {"stop": False}
     flag_key = str(id(flag))
     _flag_map[flag_key] = flag
+    sent = 0
+    skipped = []
+    extracted_count = 0
 
     jid     = f"{chat_id}_{int(time.time()*1000)}"
     out_dir = WORK_DIR / jid
     out_dir.mkdir(parents=True, exist_ok=True)
+    ch = _dest_channels.get(chat_id)
+    target = ch if ch else chat_id
+    target_label = f"📢 `{ch}`" if ch else "📲 *this chat*"
+    send_q: asyncio.Queue = asyncio.Queue(maxsize=64)
 
     status = await event.reply(
-        f"⚡ *Extracting* `{fname}`…",
+        f"⚡ *Extracting* `{fname}`…\n📤 Live send to {target_label}",
         parse_mode="markdown",
         buttons=cancel_row(flag_key),
     )
 
     async def cb(t):
-        try: await status.edit(t, parse_mode="markdown", buttons=cancel_row(flag_key))
-        except Exception: pass
+        try:
+            await status.edit(
+                f"{t}\n\n📤 Live sent: `{sent}` | Extracted: `{extracted_count}`\n🎯 Target: {target_label}",
+                parse_mode="markdown",
+                buttons=cancel_row(flag_key),
+            )
+        except Exception:
+            pass
+
+    async def on_file(p: Path):
+        nonlocal extracted_count
+        if flag["stop"]:
+            return
+        extracted_count += 1
+        await send_q.put(p)
+
+    async def live_sender_worker():
+        nonlocal sent
+        while True:
+            fp = await send_q.get()
+            if fp is None:
+                send_q.task_done()
+                break
+            try:
+                if flag["stop"]:
+                    continue
+                if not fp.exists():
+                    continue
+                sz = fp.stat().st_size
+                cap = f"📄 `{fp.name}`\n📦 {human(sz)}\n\n_via {BOT_TAG}_"
+                await send_path(target, fp, cap)
+                sent += 1
+            except Exception as e:
+                skipped.append(f"`{Path(fp).name}`: {str(e)[:90]}")
+            finally:
+                send_q.task_done()
+
+    workers = [asyncio.create_task(live_sender_worker()) for _ in range(MAX_LIVE_SEND_WORKERS)]
 
     async with _sem_extract:
-        files = await extract_archive(zip_path, out_dir, flag, cb)
+        files = await extract_archive(zip_path, out_dir, flag, cb, on_file=on_file)
+
+    await send_q.join()
+    for _ in workers:
+        await send_q.put(None)
+    await asyncio.gather(*workers, return_exceptions=True)
 
     if files is None:
         await status.edit("🚫 *Cancelled.*", parse_mode="markdown", buttons=done_buttons())
@@ -667,31 +710,27 @@ async def pipeline_archive(event, zip_path: Path, fname: str):
     total_sz  = sum(f.stat().st_size for f in files if f.exists())
     vid_count = sum(1 for f in files if is_video(f.name))
     img_count = sum(1 for f in files if is_image(f.name))
-    arc_count = sum(1 for f in files if is_archive(f.name))
 
-    ch    = _dest_channels.get(chat_id)
-    job_id = jid
-    _pending_output[job_id] = {
-        "files": files, "chat_id": chat_id, "flag_key": flag_key,
-        "source_url": "", "out_dir": str(out_dir), "zip_path": str(zip_path),
-        "status_msg": status, "fname": fname,
-    }
-
-    summary = (
-        f"✅ *Extracted!* `{fname}`\n\n"
-        f"📦 `{len(files)}` file(s) — `{human(total_sz)}`\n"
-        f"🎬 Videos: `{vid_count}` | 🖼 Images: `{img_count}`\n"
-        f"📁 Docs/other: `{len(files) - vid_count - img_count}`"
-    )
-    if arc_count:
-        summary += f"\n⚠️ Nested archives: `{arc_count}` (send separately)"
-    summary += "\n\n*Where should I send the files?*"
-
+    lines = [
+        f"🎉 *Live unzip done!* `{fname}`",
+        f"📦 Extracted: `{len(files)}` file(s) — `{human(total_sz)}`",
+        f"✅ Sent live: `{sent}` → {target_label}",
+        f"🎬 Videos: `{vid_count}` | 🖼 Images: `{img_count}`",
+    ]
+    if skipped:
+        lines.append(f"⚠️ Failed to send: `{len(skipped)}`")
+    lines.append(f"\n{bot_footer()}")
     await status.edit(
-        summary,
+        "\n".join(lines),
         parse_mode="markdown",
-        buttons=output_choice_buttons(job_id, ch or ""),
+        buttons=done_buttons(),
     )
+
+    _flag_map.pop(flag_key, None)
+    await cleanup(str(zip_path), str(out_dir))
+    if not ch:
+        asyncio.create_task(auto_del(status, AUTO_DEL_SEC))
+    return
 
 # ═══════════════════════════════════════════════════════════════════════
 #  PIPELINE — LINK
@@ -853,7 +892,8 @@ async def cb_help(event):
     await event.answer()
     await event.reply(
         "📖 *How to Use*\n\n"
-        "*📦 Extract archive:*\nSend any `.zip` `.7z` `.rar` etc. file\n\n"
+        "*📦 Extract archive:*\nSend any `.zip` `.7z` `.rar` etc. file\n"
+        "Bot starts *live sending* while extracting.\n\n"
         "*🔗 Download link:*\nPaste any URL — video, image, archive\n\n"
         "*📢 Channel mode:*\n"
         "`/setchannel @yourchan` → files go to channel\n"
@@ -873,7 +913,7 @@ async def cb_info(event):
         "unzip": (
             "📦 *Archive Extraction*\n\n"
             "Supported: `.zip` `.7z` `.rar` `.tar` `.gz` `.tgz` `.bz2` `.xz`\n\n"
-            "Just send the file → bot extracts and asks where to send!"
+            "Just send the file → bot extracts and *sends live* immediately!"
         ),
         "link": (
             "🔗 *Link Downloader*\n\n"
