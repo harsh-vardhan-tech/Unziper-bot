@@ -71,6 +71,7 @@ AUTO_DEL_SEC     = 300           # 5 min auto-delete in bot chat only
 MAX_EXTRACT_JOBS = 20            # parallel extraction slots
 MAX_LINK_JOBS    = 10            # parallel link-download slots
 MAX_LIVE_SEND_WORKERS = 3        # per-job live send workers during extraction
+MAX_LIVE_QUEUE_SIZE = 256        # extraction->send queue size per live archive job
 KEEP_ALIVE_PORT  = 8080          # UptimeRobot pings this port
 WORK_DIR         = Path("/tmp/uzbot")
 SESSIONS_FILE    = Path("/tmp/uzbot_accepted.json")
@@ -167,6 +168,15 @@ def _ext(name: str) -> str:
 def is_archive(name: str) -> bool:
     n = name.lower()
     return n.endswith(".tar.gz") or n.endswith(".tar.bz2") or _ext(n) in ARCHIVE_EXTS
+
+def safe_archive_suffix(name: str) -> str:
+    n = (name or "").lower()
+    if n.endswith(".tar.gz"):
+        return ".tar.gz"
+    if n.endswith(".tar.bz2"):
+        return ".tar.bz2"
+    ex = _ext(n)
+    return ex if ex in ARCHIVE_EXTS else ".bin"
 
 def is_video(name: str) -> bool:  return _ext(name) in VIDEO_EXTS
 def is_image(name: str) -> bool:  return _ext(name) in IMAGE_EXTS
@@ -633,7 +643,7 @@ async def pipeline_archive(event, zip_path: Path, fname: str):
     ch = _dest_channels.get(chat_id)
     target = ch if ch else chat_id
     target_label = f"📢 `{ch}`" if ch else "📲 *this chat*"
-    send_q: asyncio.Queue = asyncio.Queue(maxsize=64)
+    send_q: asyncio.Queue = asyncio.Queue(maxsize=MAX_LIVE_QUEUE_SIZE)
 
     status = await event.reply(
         f"⚡ *Extracting* `{fname}`…\n📤 Live send to {target_label}",
@@ -1060,6 +1070,7 @@ async def cb_fwd(event):
 def get_doc_name(msg) -> str:
     return next(
         (a.file_name for a in (msg.document.attributes or []) if hasattr(a, "file_name")),
+        # keep explicit extension so downstream code stays consistent
         f"file_{int(time.time())}.bin",
     )
 
@@ -1096,7 +1107,7 @@ async def album_handler(event):
     ts = int(time.time() * 1000)
     for idx, (m, fname) in enumerate(archives):
         try:
-            dl_path = WORK_DIR / f"{event.chat_id}_{ts}_{idx}_{uuid.uuid4().hex[:8]}{Path(fname).suffix}"
+            dl_path = WORK_DIR / f"{event.chat_id}_{ts}_{idx}_{uuid.uuid4().hex[:8]}{safe_archive_suffix(fname)}"
             await m.download_media(file=str(dl_path))
             tasks.append(asyncio.create_task(pipeline_archive(event, dl_path, fname)))
             started += 1
@@ -1183,7 +1194,7 @@ async def main_handler(event):
                 parse_mode="markdown",
             )
             try:
-                dl_path = WORK_DIR / f"{chat_id}_{int(time.time()*1000)}{Path(fname).suffix}"
+                dl_path = WORK_DIR / f"{chat_id}_{int(time.time()*1000)}{safe_archive_suffix(fname)}"
                 await event.download_media(file=str(dl_path))
             except Exception as e:
                 await dl_msg.edit(f"❌ Download failed: `{e}`", parse_mode="markdown"); return
