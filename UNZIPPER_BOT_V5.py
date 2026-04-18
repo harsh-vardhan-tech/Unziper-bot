@@ -636,6 +636,7 @@ async def pipeline_archive(event, zip_path: Path, fname: str):
     sent = 0
     skipped = []
     extracted_count = 0
+    stats_lock = asyncio.Lock()
 
     jid     = f"{chat_id}_{int(time.time()*1000)}"
     out_dir = WORK_DIR / jid
@@ -653,8 +654,11 @@ async def pipeline_archive(event, zip_path: Path, fname: str):
 
     async def cb(t):
         try:
+            async with stats_lock:
+                sent_now = sent
+                extracted_now = extracted_count
             await status.edit(
-                f"{t}\n\n📤 Live sent: `{sent}` | Extracted: `{extracted_count}`\n🎯 Target: {target_label}",
+                f"{t}\n\n📤 Live sent: `{sent_now}` | Extracted: `{extracted_now}`\n🎯 Target: {target_label}",
                 parse_mode="markdown",
                 buttons=cancel_row(flag_key),
             )
@@ -665,7 +669,8 @@ async def pipeline_archive(event, zip_path: Path, fname: str):
         nonlocal extracted_count
         if flag["stop"]:
             return
-        extracted_count += 1
+        async with stats_lock:
+            extracted_count += 1
         await send_q.put(p)
 
     async def live_sender_worker():
@@ -685,9 +690,11 @@ async def pipeline_archive(event, zip_path: Path, fname: str):
                 sz = fp.stat().st_size
                 cap = f"📄 `{fp.name}`\n📦 {human(sz)}\n\n_via {BOT_TAG}_"
                 await send_path(target, fp, cap)
-                sent += 1
+                async with stats_lock:
+                    sent += 1
             except Exception as e:
-                skipped.append(f"`{fp.name}`: {str(e)[:90]}")
+                async with stats_lock:
+                    skipped.append(f"`{fp.name}`: {str(e)[:90]}")
             finally:
                 send_q.task_done()
 
