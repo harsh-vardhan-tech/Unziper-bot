@@ -1,4 +1,4 @@
-Unziper Bot (single advanced version)
+Unzipper Bot (single advanced version)
 
 Use `UNZIPPER_BOT_V5.py` as the main bot file.
 

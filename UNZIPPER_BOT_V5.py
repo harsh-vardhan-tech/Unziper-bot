@@ -33,7 +33,7 @@ for _pkg in _REQUIRED:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
-import asyncio, zipfile, shutil, tarfile, time, re, logging, json
+import asyncio, zipfile, shutil, tarfile, time, re, logging, json, uuid
 from pathlib import Path
 from urllib.parse import urlparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -1048,18 +1048,30 @@ async def album_handler(event):
     )
 
     started = 0
-    for m, fname in archives:
+    failed_downloads = 0
+    tasks = []
+    for idx, (m, fname) in enumerate(archives):
         try:
-            dl_path = WORK_DIR / f"{event.chat_id}_{int(time.time()*1000)}_{started}{Path(fname).suffix}"
+            dl_path = WORK_DIR / f"{event.chat_id}_{int(time.time()*1000)}_{idx}_{uuid.uuid4().hex[:8]}{Path(fname).suffix}"
             await m.download_media(file=str(dl_path))
-            asyncio.create_task(pipeline_archive(event, dl_path, fname))
+            tasks.append(asyncio.create_task(pipeline_archive(event, dl_path, fname)))
             started += 1
-        except Exception:
+        except Exception as e:
+            failed_downloads += 1
+            logging.warning("Album archive download failed for %s: %s", fname, e)
             continue
+
+    task_failures = 0
+    if tasks:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        task_failures = sum(1 for r in results if isinstance(r, Exception))
 
     try:
         await wait.edit(
-            f"✅ Started `{started}` extraction job(s) from this album.",
+            f"✅ Processed album archives.\n"
+            f"🚀 Started: `{started}`\n"
+            f"⚠️ Failed downloads: `{failed_downloads}`\n"
+            f"⚠️ Task failures: `{task_failures}`",
             parse_mode="markdown",
         )
     except Exception:
