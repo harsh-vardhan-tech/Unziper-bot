@@ -1049,15 +1049,18 @@ async def album_handler(event):
 
     started = 0
     failed_downloads = 0
+    failed_items = []
     tasks = []
+    ts = int(time.time() * 1000)
     for idx, (m, fname) in enumerate(archives):
         try:
-            dl_path = WORK_DIR / f"{event.chat_id}_{int(time.time()*1000)}_{idx}_{uuid.uuid4().hex[:8]}{Path(fname).suffix}"
+            dl_path = WORK_DIR / f"{event.chat_id}_{ts}_{idx}_{uuid.uuid4().hex[:8]}{Path(fname).suffix}"
             await m.download_media(file=str(dl_path))
             tasks.append(asyncio.create_task(pipeline_archive(event, dl_path, fname)))
             started += 1
         except Exception as e:
             failed_downloads += 1
+            failed_items.append(f"{fname}: {str(e)[:80]}")
             logging.warning("Album archive download failed for %s: %s", fname, e)
             continue
 
@@ -1067,15 +1070,19 @@ async def album_handler(event):
         task_failures = sum(1 for r in results if isinstance(r, Exception))
 
     try:
+        details = ""
+        if failed_items:
+            details = "\n\n" + "\n".join(f"• `{x}`" for x in failed_items[:3])
         await wait.edit(
             f"✅ Processed album archives.\n"
             f"🚀 Started: `{started}`\n"
             f"⚠️ Failed downloads: `{failed_downloads}`\n"
-            f"⚠️ Task failures: `{task_failures}`",
+            f"⚠️ Task failures: `{task_failures}`"
+            f"{details}",
             parse_mode="markdown",
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("Album status message update failed: %s", e)
 
 # ═══════════════════════════════════════════════════════════════════════
 #  MAIN MESSAGE HANDLER
