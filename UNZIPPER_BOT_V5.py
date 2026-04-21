@@ -26,7 +26,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import aiohttp
+try:
+    import aiohttp
+except Exception:
+    aiohttp = None
 import aiofiles
 import yt_dlp
 from telethon import TelegramClient, events, Button
@@ -398,6 +401,9 @@ async def download_link(url: str, out_dir: Path, flag: dict, status_cb) -> list 
     if isinstance(result, Exception):
         # Fallback: direct HTTP download
         await upd(f"🌐 *Direct HTTP download…*\n`{url[:70]}`")
+        if aiohttp is None:
+            await upd("❌ Direct HTTP fallback unavailable (aiohttp missing).")
+            return []
         try:
             async with aiohttp.ClientSession() as sess:
                 async with sess.get(url, timeout=aiohttp.ClientTimeout(total=600)) as resp:
