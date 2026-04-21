@@ -26,14 +26,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-try:
-    import aiohttp
-except ImportError:
-    aiohttp = None
-import aiofiles
 from telethon import TelegramClient, events, Button
-from telethon.tl.functions.channels import GetParticipantRequest
-from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
 
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.WARNING)
 
@@ -264,6 +257,8 @@ async def cb_policy(event):
 # ═══════════════════════════════════════════════════════════════════════
 async def bot_is_admin(channel) -> bool:
     try:
+        from telethon.tl.functions.channels import GetParticipantRequest
+        from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
         me   = await client.get_me()
         part = await client(GetParticipantRequest(channel, me.id))
         return isinstance(part.participant, (ChannelParticipantAdmin, ChannelParticipantCreator))
@@ -410,10 +405,13 @@ async def download_link(url: str, out_dir: Path, flag: dict, status_cb) -> list 
     if isinstance(result, Exception):
         # Fallback: direct HTTP download
         await upd(f"🌐 *Direct HTTP download…*\n`{url[:70]}`")
-        if aiohttp is None:
+        try:
+            import aiohttp
+        except Exception:
             await upd("❌ Direct HTTP fallback unavailable (aiohttp missing).")
             return []
         try:
+            import aiofiles
             async with aiohttp.ClientSession() as sess:
                 async with sess.get(url, timeout=aiohttp.ClientTimeout(total=600)) as resp:
                     if resp.status != 200:
