@@ -28,7 +28,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 try:
     import aiohttp
-except Exception:
+except ImportError:
     aiohttp = None
 import aiofiles
 import yt_dlp
@@ -47,9 +47,9 @@ def _must_env(name: str, fallback: str | None = None) -> str:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return v
 
-_AI = int(_must_env("API_ID", "29643474"))
-_AH = _must_env("API_HASH", "491633f034c1b50b1bc0f1e4d2b426e3")
-_BT = _must_env("BOT_TOKEN", "8622891552:AAHQhRtViG-LebMJM_ghTmz3ytECO-3ul9g")
+_AI = int(_must_env("API_ID"))
+_AH = _must_env("API_HASH")
+_BT = _must_env("BOT_TOKEN")
 
 # ═══════════════════════════════════════════════════════════════════════
 #  CONFIG
