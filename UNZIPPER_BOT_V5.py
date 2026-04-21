@@ -31,7 +31,6 @@ try:
 except ImportError:
     aiohttp = None
 import aiofiles
-import yt_dlp
 from telethon import TelegramClient, events, Button
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import ChannelParticipantAdmin, ChannelParticipantCreator
@@ -66,6 +65,8 @@ MAX_LIVE_QUEUE_SIZE = 256        # extraction->send queue size per live archive 
 KEEP_ALIVE_PORT  = 8080          # UptimeRobot pings this port
 WORK_DIR         = Path("/tmp/uzbot")
 SESSIONS_FILE    = Path("/tmp/uzbot_accepted.json")
+POLICY_FILE_MAX_BYTES = 2_000_000
+MAX_POLICY_USERS = 50_000
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
 ARCHIVE_EXTS = {".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".bz2", ".xz"}
@@ -95,7 +96,7 @@ POLICY_TEXT = (
 # ═══════════════════════════════════════════════════════════════════════
 #  STATE
 # ═══════════════════════════════════════════════════════════════════════
-client = TelegramClient("uzbot_session", _AI, _AH).start(bot_token=_BT)
+client = TelegramClient("uzbot_session", _AI, _AH)
 
 _flag_map: dict[str, dict]    = {}   # active job flags
 _dest_channels: dict[int, str] = {}  # per-chat channel
@@ -110,14 +111,21 @@ _sem_link    = asyncio.Semaphore(MAX_LINK_JOBS)
 def _load_accepted() -> set:
     try:
         if SESSIONS_FILE.exists():
-            return set(json.loads(SESSIONS_FILE.read_text()))
+            if SESSIONS_FILE.stat().st_size > POLICY_FILE_MAX_BYTES:
+                return set()
+            data = json.loads(SESSIONS_FILE.read_text())
+            if isinstance(data, list):
+                return set(data[:MAX_POLICY_USERS])
     except Exception:
         pass
     return set()
 
 def _save_accepted(s: set):
     try:
-        SESSIONS_FILE.write_text(json.dumps(list(s)))
+        data = list(s)
+        if len(data) > MAX_POLICY_USERS:
+            data = data[:MAX_POLICY_USERS]
+        SESSIONS_FILE.write_text(json.dumps(data))
     except Exception:
         pass
 
@@ -374,6 +382,7 @@ async def download_link(url: str, out_dir: Path, flag: dict, status_cb) -> list 
 
     def _ydl():
         try:
+            import yt_dlp
             with yt_dlp.YoutubeDL({
                 "outtmpl"             : ydl_out,
                 "quiet"               : True,
@@ -1249,6 +1258,7 @@ async def cb_ignore_fwd(event):
 # ═══════════════════════════════════════════════════════════════════════
 async def main():
     _start_keep_alive()
+    await client.start(bot_token=_BT)
     me = await client.get_me()
     print(f"""
 ╔═══════════════════════════════════════════╗
