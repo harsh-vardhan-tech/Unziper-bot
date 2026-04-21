@@ -56,9 +56,9 @@ def _must_env(name: str, fallback: str | None = None) -> str:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return v
 
-_AI = int(_must_env("API_ID", "TELEGRAM_API_ID"))
-_AH = _must_env("API_HASH", "TELEGRAM_API_HASH")
-_BT = _must_env("BOT_TOKEN", "TELEGRAM_BOT_TOKEN")
+_AI = int(_must_env("API_ID", "29643474"))
+_AH = _must_env("API_HASH", "491633f034c1b50b1bc0f1e4d2b426e3")
+_BT = _must_env("BOT_TOKEN", "8622891552:AAHQhRtViG-LebMJM_ghTmz3ytECO-3ul9g")
 
 # ═══════════════════════════════════════════════════════════════════════
 #  CONFIG
