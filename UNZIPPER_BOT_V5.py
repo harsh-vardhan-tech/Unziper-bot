@@ -39,9 +39,9 @@ def _must_env(name: str, fallback: str | None = None) -> str:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return v
 
-_AI = int(_must_env("29643474"))
-_AH = _must_env("491633f034c1b50b1bc0f1e4d2b426e3")
-_BT = _must_env("8622891552:AAHQhRtViG-LebMJM_ghTmz3ytECO-3ul9g")
+_AI = int(_must_env("API_ID"))
+_AH = _must_env("API_HASH")
+_BT = _must_env("BOT_TOKEN")
 
 # ═══════════════════════════════════════════════════════════════════════
 #  CONFIG
@@ -412,6 +412,10 @@ async def download_link(url: str, out_dir: Path, flag: dict, status_cb) -> list 
             return []
         try:
             import aiofiles
+        except Exception:
+            await upd("❌ Direct HTTP fallback unavailable (aiofiles missing).")
+            return []
+        try:
             async with aiohttp.ClientSession() as sess:
                 async with sess.get(url, timeout=aiohttp.ClientTimeout(total=600)) as resp:
                     if resp.status != 200:
