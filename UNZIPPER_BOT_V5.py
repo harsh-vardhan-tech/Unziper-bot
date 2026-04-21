@@ -19,19 +19,7 @@
 #  Run:  python main.py
 # ═══════════════════════════════════════════════════════════════════════
 
-import subprocess, sys, os, threading
-
-# ── Auto-install ─────────────────────────────────────────────────────────
-_REQUIRED = ["telethon", "cryptography", "aiohttp", "aiofiles", "yt-dlp", "requests"]
-for _pkg in _REQUIRED:
-    try:
-        __import__(_pkg.replace("-", "_"))
-    except ImportError:
-        print(f"📦 Installing {_pkg}...")
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet", _pkg],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
+import subprocess, os, threading
 
 import asyncio, zipfile, shutil, tarfile, time, re, logging, json, uuid
 from pathlib import Path
